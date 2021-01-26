@@ -2,7 +2,7 @@ import itertools
 from warnings import warn
 from collections import namedtuple
 
-from scipy.stats import norm
+from scipy.stats import norm, logistic
 from scipy.special import expit as sigmoid
 from scipy.special import expit, logit
 
@@ -246,6 +246,17 @@ def BigUniform(precision):
         return message, symbol
     return Codec(push, pop)
 
+def _cdf_to_enc_statfun_q(cdf, coding_prec):
+
+    def q(x):
+        return _nearest_int(x*(1 << coding_prec))
+
+    def enc_statfun(s):
+        start = cdf(s)
+        freq = cdf(s + 1) - start
+        return q(start), q(freq)
+    return enc_statfun
+
 def _discretize(cdf, ppf, low, high, bin_prec, coding_prec):
     """
     Utility function for forming a codec given a (continuous) cdf and its
@@ -255,11 +266,20 @@ def _discretize(cdf, ppf, low, high, bin_prec, coding_prec):
 
     so that all intervals end up with non-zero mass.
     """
+
+    # def cdf_(idx):
+    #     assert idx.min() >= 0
+    #     x_low = low + (high - low) * idx / (1 << bin_prec)
+    #     return cdf(x_low)
+
+    # enc_statfun = _cdf_to_enc_statfun_q(cdf_, coding_prec)
+
     def cdf_(idx):
+        assert idx.min() >= 0
         x_low = low + (high - low) * idx / (1 << bin_prec)
-        return np.where(
-            idx >= 0, _nearest_int((1 << coding_prec) * cdf(x_low)), 0)
+        return _nearest_int((1 << coding_prec) * cdf(x_low))
     enc_statfun = _cdf_to_enc_statfun(cdf_)
+
     def ppf_(cf):
         x_max = ppf((cf + .5) / (1 << coding_prec))
         return np.uint64(
@@ -437,25 +457,27 @@ def Categorical(p, prec):
     return NonUniform(enc_statfun, dec_statfun, prec)
 
 def Logistic_UnifBins(
-        means, log_scales, coding_prec, bin_prec, bin_lb, bin_ub):
+        means, scales, coding_prec, bin_prec, bin_lb, bin_ub):
     """
     Codec for logistic distributed data.
 
     The discretization is assumed to be uniform (evenly spaced) between bin_lb
     and bin_ub.
     """
+    assert bin_prec < coding_prec
     bin_range = bin_ub - bin_lb
+
     def cdf(x):
         cdf_min = (x - bin_lb) / bin_range * 2 ** (bin_prec - coding_prec)
         cdf_max = 1 + (x - bin_ub) / bin_range * 2 ** (bin_prec - coding_prec)
         return np.clip(
-            expit((x - means) / np.exp(log_scales)), cdf_min, cdf_max)
+            expit((x - means) / scales), cdf_min, cdf_max)
 
     def ppf(cf):
         ppf_max = bin_lb + cf * bin_range * 2 ** (coding_prec - bin_prec)
         ppf_min = bin_ub + (cf - 1) * bin_range * 2 ** (coding_prec - bin_prec)
         return np.clip(
-            np.exp(log_scales) * logit(cf) + means, ppf_min, ppf_max)
+            scales * logit(cf) + means, ppf_min, ppf_max)
     return _discretize(cdf, ppf, bin_lb, bin_ub, bin_prec, coding_prec)
 
 def _create_logistic_mixture_buckets(means, log_scales, logit_probs, coding_prec, bin_prec,
@@ -619,3 +641,56 @@ def AutoRegressive(param_fn, data_shape, params_shape, elem_idxs, elem_codec):
             data[idx] = elem
         return message, data
     return Codec(push, pop)
+
+std_logistic_bucket_cache = {}  # Stores bucket endpoints
+std_logistic_centres_cache = {}  # Stores bucket centres
+
+def std_logistic_buckets(precision):
+    """
+    Return the endpoints of buckets partitioning the domain of the prior. Each
+    bucket has mass 1 / (1 << precision) under the prior.
+    """
+    if precision in std_logistic_bucket_cache:
+        return std_logistic_bucket_cache[precision]
+    else:
+        buckets = logistic.ppf(np.linspace(0, 1, (1 << precision) + 1))
+        std_logistic_bucket_cache[precision] = buckets
+        return buckets
+
+def std_logistic_centres(precision):
+    """
+    Return the centres of mass of buckets partitioning the domain of the prior.
+    Each bucket has mass 1 / (1 << precision) under the prior.
+    """
+    if precision in std_logistic_centres_cache:
+        return std_logistic_centres_cache[precision]
+    else:
+        centres = logistic.ppf((np.arange(1 << precision) + 0.5) / (1 << precision))
+        std_logistic_centres_cache[precision] = centres
+        return centres
+
+def Logistic_StdBins(mean, stdd, coding_prec, bin_prec):
+    """
+    Codec for data from a Discretized Logistic with bins that have equal
+    mass under a standard (sigmoid) logistic.
+    """
+
+    def cdf(idx):
+        x = std_logistic_buckets(bin_prec)[idx]
+        return _nearest_int(logistic.cdf(x, mean, stdd) * (1 << coding_prec))
+
+    def ppf(cf):
+        x = logistic.ppf((cf + 0.5) / (1 << coding_prec), mean, stdd)
+        # Binary search is faster than using the actual logistic cdf for the
+        # precisions we typically use, however the cdf is O(1) whereas search
+        # is O(precision), so for high precision cdf will be faster.
+        idxs = np.uint64(np.digitize(x, std_logistic_buckets(bin_prec)) - 1)
+        while not np.all((cdf(idxs) <= cf) & (cf < cdf(idxs + 1))):
+            idxs = np.select(
+                [cf < cdf(idxs), cf >= cdf(idxs + 1)],
+                [idxs - 1,       idxs + 1           ], idxs)
+        return idxs
+
+    enc_statfun = _cdf_to_enc_statfun(cdf)
+    dec_statfun = ppf
+    return NonUniform(enc_statfun, dec_statfun, coding_prec)

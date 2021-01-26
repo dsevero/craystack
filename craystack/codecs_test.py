@@ -153,7 +153,7 @@ def test_logistic():
     data = np.array([rng.choice(256) for _ in range(batch_size)]).astype('uint64')
     check_codec((batch_size,), cs.Logistic_UnifBins(means, log_scale,
                                                         coding_precision, bin_precision,
-                                                        bin_lb=-0.5, bin_ub=0.5),
+                                                        bin_lb=0, bin_ub=255),
                 data)
 
 def test_discretized():
@@ -177,7 +177,7 @@ def test_logistic_mixture():
     # type is important!
     data = np.array([rng.choice(256) for _ in range(batch_size)]).astype('uint64')
     check_codec((shape[0],), cs.LogisticMixture_UnifBins(means, log_scales, logit_probs,
-                                                             precision, bin_prec=8, bin_lb=-1., bin_ub=1.), data)
+                                                         precision, bin_prec=8, bin_lb=-1., bin_ub=1.), data)
 
 def test_autoregressive():
     precision = 8
