@@ -665,7 +665,9 @@ def std_logistic_centres(precision):
     if precision in std_logistic_centres_cache:
         return std_logistic_centres_cache[precision]
     else:
-        centres = logistic.ppf((np.arange(1 << precision) + 0.5) / (1 << precision))
+        # centres = logistic.ppf((np.arange(1 << precision) + 0.5) / (1 << precision))
+        p = (np.arange(1 << precision) + 0.5) / (1 << precision)
+        centres = np.log(p / (1. - p))
         std_logistic_centres_cache[precision] = centres
         return centres
 
@@ -675,17 +677,20 @@ def Logistic_StdBins(mean, stdd, coding_prec, bin_prec):
     mass under a standard (sigmoid) logistic.
     """
 
+    assert coding_prec >= bin_prec
     def cdf(idx):
         x = std_logistic_buckets(bin_prec)[idx]
         return _nearest_int(logistic.cdf(x, mean, stdd) * (1 << coding_prec))
 
     def ppf(cf):
+        import ipdb; ipdb.set_trace()
         x = logistic.ppf((cf + 0.5) / (1 << coding_prec), mean, stdd)
         # Binary search is faster than using the actual logistic cdf for the
         # precisions we typically use, however the cdf is O(1) whereas search
         # is O(precision), so for high precision cdf will be faster.
         idxs = np.uint64(np.digitize(x, std_logistic_buckets(bin_prec)) - 1)
         while not np.all((cdf(idxs) <= cf) & (cf < cdf(idxs + 1))):
+            print('ppf fix')
             idxs = np.select(
                 [cf < cdf(idxs), cf >= cdf(idxs + 1)],
                 [idxs - 1,       idxs + 1           ], idxs)

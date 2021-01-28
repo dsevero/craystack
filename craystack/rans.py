@@ -28,6 +28,7 @@ def stack_slice(stack, n):
 
         if len(stack) < 2:
             # empty pop
+            print('empty pop')
             arr, stack = base_message(shape, randomize=True)
         else:
             arr, stack = stack
