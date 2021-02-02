@@ -3,9 +3,13 @@ Vectorized implementation of rANS based on https://arxiv.org/abs/1402.3392
 """
 
 import numpy as np
+import os
 
 
 rans_l = 1 << 31  # the lower bound of the normalisation interval
+
+def bernoulli_bits(shape):
+    return np.random.randint(0, rans_l, size=shape, dtype='uint64')
 
 def base_message(shape, randomize=False):
     """
@@ -15,7 +19,7 @@ def base_message(shape, randomize=False):
     """
     head = np.full(shape, rans_l, "uint64")
     if randomize:
-        head += np.random.randint(0, rans_l, size=shape, dtype='uint64')
+        head += bernoulli_bits(shape)
     return (head, ())
 
 def stack_extend(stack, arr):
@@ -23,18 +27,19 @@ def stack_extend(stack, arr):
 
 def stack_slice(stack, n):
     slc = []
-    shape = stack[0].shape
     while n > 0:
 
         if len(stack) < 2:
-            # empty pop
-            arr, stack = base_message(shape, randomize=True)
-        else:
-            arr, stack = stack
+            os.environ['EMPTY_POPS'] = str(int(os.environ['EMPTY_POPS']) + n)
+            slc.append(bernoulli_bits(n))
+            break
+
+        arr, stack = stack
 
         if n >= len(arr):
             slc.append(arr)
             n -= len(arr)
+
         else:
             slc.append(arr[:n])
             stack = arr[n:], stack
