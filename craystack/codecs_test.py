@@ -361,3 +361,16 @@ def test_flatten_rate():
     l_vector = len(cs.flatten(message))
 
     assert (l_vector - l_init) / (l_scalar - l_init) - 1 < 0.001
+
+
+def test_empty_pop():
+    #TODO(dsevero) Testing the empty pops hack
+    import os
+    os.environ['EMPTY_POPS'] = '0'
+
+    message = (rans.bernoulli_bits((2,3)),
+               (rans.bernoulli_bits(2), ()))
+    message, symbol = codecs.Uniform(1).pop(message)
+
+    # asked for 2*3 = 6, only had 2 in tail
+    assert int(os.environ['EMPTY_POPS']) == 4

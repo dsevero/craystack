@@ -3,6 +3,7 @@ Vectorized implementation of rANS based on https://arxiv.org/abs/1402.3392
 """
 
 import numpy as np
+import os
 
 
 rans_l = 1 << 31  # the lower bound of the normalisation interval
@@ -30,7 +31,7 @@ def stack_slice(stack, n):
 
         if len(stack) < 2:
             #TODO(dsevero) Hack to count number of empty pops
-            os.environ['EMPTY_POPS'] = str(int(os.environ['EMPTY_POPS']) + n)
+            os.environ['EMPTY_POPS'] = str(int(os.environ.get('EMPTY_POPS', 0)) + n)
             slc.append(bernoulli_bits(n))
             break
 
