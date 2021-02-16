@@ -7,6 +7,9 @@ import numpy as np
 
 rans_l = 1 << 31  # the lower bound of the normalisation interval
 
+def bernoulli_bits(shape):
+    return np.random.randint(0, rans_l, size=shape, dtype='uint64')
+
 def base_message(shape, randomize=False):
     """
     Returns a base ANS message of given shape. If randomize=True,
@@ -15,8 +18,8 @@ def base_message(shape, randomize=False):
     """
     head = np.full(shape, rans_l, "uint64")
     if randomize:
-        head += np.random.randint(0, rans_l, size=shape, dtype='uint64')
-    return head, ()
+        head += bernoulli_bits(shape)
+    return (head, ())
 
 def stack_extend(stack, arr):
     return arr, stack
@@ -24,7 +27,13 @@ def stack_extend(stack, arr):
 def stack_slice(stack, n):
     slc = []
     while n > 0:
+
+        if len(stack) < 2:
+            slc.append(bernoulli_bits(n))
+            break
+
         arr, stack = stack
+
         if n >= len(arr):
             slc.append(arr)
             n -= len(arr)
