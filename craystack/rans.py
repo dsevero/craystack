@@ -29,6 +29,8 @@ def stack_slice(stack, n):
     while n > 0:
 
         if len(stack) < 2:
+            #TODO(dsevero) Hack to count number of empty pops
+            os.environ['EMPTY_POPS'] = str(int(os.environ['EMPTY_POPS']) + n)
             slc.append(bernoulli_bits(n))
             break
 
