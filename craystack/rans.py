@@ -7,6 +7,7 @@ import os
 
 
 rans_l = 1 << 31  # the lower bound of the normalisation interval
+pid = os.getpid()
 
 def bernoulli_bits(shape):
     return np.random.randint(0, rans_l, size=shape, dtype='uint64')
@@ -31,7 +32,7 @@ def stack_slice(stack, n):
 
         if len(stack) < 2:
             #TODO(dsevero) Hack to count number of empty pops
-            os.environ['EMPTY_POPS'] = str(int(os.environ.get('EMPTY_POPS', 0)) + n)
+            os.environ[f'EMPTY_POPS_{pid}'] = str(int(os.environ.get(f'EMPTY_POPS_{pid}', 0)) + n)
             slc.append(bernoulli_bits(n))
             break
 
