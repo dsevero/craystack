@@ -35,7 +35,7 @@ def stack_slice(stack, n):
         if stack:
             arr, stack = stack
         else:
-            warn('Popping from empty message. Generating random data.')
+            warn(f'Popping from empty message. Generating {32*n} bits of random data.')
             os.environ[f'EMPTY_POPS_{pid}'] = str(int(os.environ.get(f'EMPTY_POPS_{pid}', 0)) + n)
             arr, stack = rng.integers(1 << 32, size=n, dtype='uint32'), ()
         if n >= len(arr):
