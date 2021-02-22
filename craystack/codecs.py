@@ -4,8 +4,7 @@ from warnings import warn
 from collections import namedtuple
 
 from scipy.stats import norm
-from scipy.special import expit as sigmoid
-from scipy.special import expit, logit
+from scipy.special import expit as sigmoid, logit
 
 import numpy as np
 import craystack.rans as vrans
@@ -619,3 +618,51 @@ def AutoRegressive(param_fn, data_shape, params_shape, elem_idxs, elem_codec):
             data[idx] = elem
         return message, data
     return Codec(push, pop)
+
+def make_std_quantization(dist):
+
+    @lru_cache()
+    def std_dist_buckets(precision):
+        """
+        Return the endpoints of buckets partitioning the domain of the prior. Each
+        bucket has mass 1 / (1 << precision) under the prior.
+        """
+        return dist.ppf(np.linspace(0, 1, (1 << precision) + 1))
+
+    @lru_cache()
+    def std_dist_centres(precision):
+        """
+        Return the medians of buckets partitioning the domain of the prior. Each
+        bucket has mass 1 / (1 << precision) under the prior.
+        """
+        return dist.ppf((np.arange(1 << precision) + 0.5) / (1 << precision))
+
+    def Dist_StdBins(mean, stdd, coding_prec, bin_prec):
+        """
+        Codec for data from a Discretized Logistic with bins that have equal
+        mass under a standard dist.
+        """
+
+        assert coding_prec >= bin_prec
+        def cdf(idx):
+            x = std_dist_buckets(bin_prec)[idx]
+            return _nearest_int(dist.cdf(x, mean, stdd) * (1 << coding_prec))
+
+        def ppf(cf):
+            x = dist.ppf((cf + 0.5) / (1 << coding_prec), mean, stdd)
+            # Binary search is faster than using the actual dist cdf for the
+            # precisions we typically use, however the cdf is O(1) whereas search
+            # is O(precision), so for high precision cdf will be faster.
+            idxs = np.uint64(np.digitize(x, std_dist_buckets(bin_prec)) - 1)
+            while not np.all((cdf(idxs) <= cf) & (cf < cdf(idxs + 1))):
+                print('ppf fix')
+                idxs = np.select(
+                    [cf < cdf(idxs), cf >= cdf(idxs + 1)],
+                    [idxs - 1,       idxs + 1           ], idxs)
+            return idxs
+
+        enc_statfun = _cdf_to_enc_statfun(cdf)
+        dec_statfun = ppf
+        return NonUniform(enc_statfun, dec_statfun, coding_prec)
+
+    return std_dist_buckets, std_dist_centres, Dist_StdBins
