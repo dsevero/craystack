@@ -639,8 +639,8 @@ def make_std_quantization(dist):
 
     def Dist_StdBins(mean, stdd, coding_prec, bin_prec):
         """
-        Codec for data from a Discretized Logistic with bins that have equal
-        mass under a standard dist.
+        Codec for data from a Discretized distribution with bins that have equal
+        mass under the standard variant.
         """
 
         assert coding_prec >= bin_prec
