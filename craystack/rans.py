@@ -5,6 +5,7 @@ from warnings import warn
 
 import numpy as np
 import os
+from csutils import log_cuda_runtime
 
 
 rng = np.random.default_rng(0)
@@ -47,6 +48,7 @@ def stack_slice(stack, n):
             break
     return stack, np.concatenate(slc)
 
+@log_cuda_runtime(func='vANS:push')
 def push(x, starts, freqs, precisions):
     starts, freqs, precisions = map(atleast_1d, (starts, freqs, precisions))
     head, tail = x
@@ -59,10 +61,13 @@ def push(x, starts, freqs, precisions):
     head_div_freqs, head_mod_freqs = np.divmod(head, freqs)
     return (head_div_freqs << precisions) + head_mod_freqs + starts, tail
 
+@log_cuda_runtime(func='vANS:pop')
 def pop(x, precisions):
     precisions = atleast_1d(precisions)
     head_, tail_ = x
     cfs = head_ & ((1 << precisions) - 1)
+
+    @log_cuda_runtime(func='vANS:pop')
     def pop(starts, freqs):
         starts, freqs = map(atleast_1d, (starts, freqs))
         head = freqs * (head_ >> precisions) + cfs - starts

@@ -672,7 +672,7 @@ def make_std_quantization(dist):
 def make_std_quantization_gpu(Dist):
 
 
-    with log_cuda_runtime(func='io'):
+    with log_cuda_runtime(device='io'):
         zero = torch.Tensor([0]).cuda().double()
         one = torch.Tensor([1]).cuda().double()
 
@@ -682,7 +682,8 @@ def make_std_quantization_gpu(Dist):
         Return the endpoints of buckets partitioning the domain of the prior. Each
         bucket has mass 1 / (1 << precision) under the prior.
         """
-        return Dist(zero, one).icdf(torch.linspace(0, 1, (1 << precision) + 1, device='cuda'))
+        with log_cuda_runtime(device='io'):
+            return Dist(zero, one).icdf(torch.linspace(0, 1, (1 << precision) + 1, device='cuda'))
 
     @lru_cache()
     def std_dist_centres(precision):
@@ -690,7 +691,8 @@ def make_std_quantization_gpu(Dist):
         Return the medians of buckets partitioning the domain of the prior. Each
         bucket has mass 1 / (1 << precision) under the prior.
         """
-        return Dist(zero, one).icdf((torch.arange(1 << precision, device='cuda') + 0.5) / (1 << precision))
+        with log_cuda_runtime(device='io'):
+            return Dist(zero, one).icdf((torch.arange(1 << precision, device='cuda') + 0.5) / (1 << precision))
 
     def Dist_StdBins(mean, stdd, coding_prec, bin_prec):
         """
@@ -698,9 +700,9 @@ def make_std_quantization_gpu(Dist):
         mass under the standard variant.
         """
 
-        @log_cuda_runtime(func='io')
+        @log_cuda_runtime(device='io')
         def to_cpu(tensor):
-            return tensor.detach().cpu().numpy()
+            return np.array(tensor.detach().cpu())
 
         def _nearest_int(arr):
             return torch.ceil(arr - 0.5).int()
@@ -714,33 +716,34 @@ def make_std_quantization_gpu(Dist):
         assert coding_prec >= bin_prec
         buckets = std_dist_buckets(bin_prec)
 
+        @log_cuda_runtime(func='cdf', device='gpu')
         def cdf(idx: 'gpu'):
             x = buckets[idx]
             return _nearest_int(Dist(mean, stdd).cdf(x) * (1 << coding_prec))
 
         def ppf(cf: 'cpu'):
-
-            with log_cuda_runtime(func='io'):
+            with log_cuda_runtime(device='io'):
                 cf = torch.LongTensor(cf.astype(np.int32)).cuda()
-            x = Dist(mean.double(), stdd.double()).icdf((cf + 0.5) / (1 << coding_prec))
-            # Binary search is faster than using the actual dist cdf for the
-            # precisions we typically use, however the cdf is O(1) whereas search
-            # is O(precision), so for high precision cdf will be faster.
-            idxs = (torch.bucketize(x, buckets) - 1).long()
-            while not torch.all((cdf(idxs) <= cf) & (cf < cdf(idxs + 1))):
-                idxs = torch.where(cf < cdf(idxs), idxs - 1, idxs)
-                idxs = torch.where(cf >= cdf(idxs + 1), idxs + 1, idxs)
+            with log_cuda_runtime(func='ppf', device='gpu'):
+                x = Dist(mean.double(), stdd.double()).icdf((cf + 0.5) / (1 << coding_prec))
+                # Binary search is faster than using the actual dist cdf for the
+                # precisions we typically use, however the cdf is O(1) whereas search
+                # is O(precision), so for high precision cdf will be faster.
+                idxs = (torch.bucketize(x, buckets) - 1).long()
+                while not torch.all((cdf(idxs) <= cf) & (cf < cdf(idxs + 1))):
+                    idxs = torch.where(cf < cdf(idxs), idxs - 1, idxs)
+                    idxs = torch.where(cf >= cdf(idxs + 1), idxs + 1, idxs)
             return to_cpu(idxs)
 
         def enc_statfun(idx: 'cpu'):
-            with log_cuda_runtime(func='io'):
+            with log_cuda_runtime(device='io'):
                 idx = torch.LongTensor(idx.astype(np.int32)).cuda()
             return _cdf_to_enc_statfun(cdf)(idx)
 
         dec_statfun = ppf
         codec = NonUniform(enc_statfun, dec_statfun, coding_prec)
-        # push = log_cuda_runtime(func='posterior:codec:push')(codec.push)
-        # pop = log_cuda_runtime(func='posterior:codec:pop')(codec.pop)
+        # push = log_cuda_runtime(func='vANS:push')(codec.push)
+        # pop = log_cuda_runtime(func='vANS:pop')(codec.pop)
         # return Codec(push, pop)
         return codec
 
