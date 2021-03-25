@@ -1,3 +1,4 @@
+import torch
 import itertools
 from functools import lru_cache
 from warnings import warn
@@ -9,6 +10,7 @@ from scipy.special import expit as sigmoid, logit
 import numpy as np
 import craystack.rans as vrans
 import craystack.util as util
+from csutils import log_cuda_runtime
 
 Codec = namedtuple('Codec', ['push', 'pop'])
 
@@ -666,3 +668,106 @@ def make_std_quantization(dist):
         return NonUniform(enc_statfun, dec_statfun, coding_prec)
 
     return std_dist_buckets, std_dist_centres, Dist_StdBins
+
+def make_std_quantization_gpu(Dist):
+
+
+    with log_cuda_runtime(func='io'):
+        zero = torch.Tensor([0]).cuda().double()
+        one = torch.Tensor([1]).cuda().double()
+
+    @lru_cache()
+    def std_dist_buckets(precision):
+        """
+        Return the endpoints of buckets partitioning the domain of the prior. Each
+        bucket has mass 1 / (1 << precision) under the prior.
+        """
+        return Dist(zero, one).icdf(torch.linspace(0, 1, (1 << precision) + 1, device='cuda'))
+
+    @lru_cache()
+    def std_dist_centres(precision):
+        """
+        Return the medians of buckets partitioning the domain of the prior. Each
+        bucket has mass 1 / (1 << precision) under the prior.
+        """
+        return Dist(zero, one).icdf((torch.arange(1 << precision, device='cuda') + 0.5) / (1 << precision))
+
+    def Dist_StdBins(mean, stdd, coding_prec, bin_prec):
+        """
+        Codec for data from a Discretized distribution with bins that have equal
+        mass under the standard variant.
+        """
+
+        @log_cuda_runtime(func='io')
+        def to_cpu(tensor):
+            return tensor.detach().cpu().numpy()
+
+        def _nearest_int(arr):
+            return torch.ceil(arr - 0.5).int()
+
+        def _cdf_to_enc_statfun(cdf):
+            def enc_statfun(s):
+                lower = cdf(s)
+                return to_cpu(lower), to_cpu(cdf(s + 1) - lower)
+            return enc_statfun
+
+        assert coding_prec >= bin_prec
+        buckets = std_dist_buckets(bin_prec)
+
+        def cdf(idx: 'gpu'):
+            x = buckets[idx]
+            return _nearest_int(Dist(mean, stdd).cdf(x) * (1 << coding_prec))
+
+        def ppf(cf: 'cpu'):
+
+            with log_cuda_runtime(func='io'):
+                cf = torch.LongTensor(cf.astype(np.int32)).cuda()
+            x = Dist(mean.double(), stdd.double()).icdf((cf + 0.5) / (1 << coding_prec))
+            # Binary search is faster than using the actual dist cdf for the
+            # precisions we typically use, however the cdf is O(1) whereas search
+            # is O(precision), so for high precision cdf will be faster.
+            idxs = (torch.bucketize(x, buckets) - 1).long()
+            while not torch.all((cdf(idxs) <= cf) & (cf < cdf(idxs + 1))):
+                idxs = torch.where(cf < cdf(idxs), idxs - 1, idxs)
+                idxs = torch.where(cf >= cdf(idxs + 1), idxs + 1, idxs)
+            return to_cpu(idxs)
+
+        def enc_statfun(idx: 'cpu'):
+            with log_cuda_runtime(func='io'):
+                idx = torch.LongTensor(idx.astype(np.int32)).cuda()
+            return _cdf_to_enc_statfun(cdf)(idx)
+
+        dec_statfun = ppf
+        codec = NonUniform(enc_statfun, dec_statfun, coding_prec)
+        # push = log_cuda_runtime(func='posterior:codec:push')(codec.push)
+        # pop = log_cuda_runtime(func='posterior:codec:pop')(codec.pop)
+        # return Codec(push, pop)
+        return codec
+
+    return std_dist_buckets, std_dist_centres, Dist_StdBins
+
+# Inverse of np.diff
+def _undiff(x):
+    return np.concatenate([np.zeros_like(x, shape=(*x.shape[:-1], 1)),
+                           np.cumsum(x, -1)], -1)
+
+def CategoricalNew(weights, prec):
+    """
+    Assume that the last dim of weights contains the unnormalized
+    probability vectors, so p = weights / np.sum(weights, axis=-1).
+
+    Warning: this will fail silently if you try to encode data with quantized
+    probability equal to zero!
+    """
+    cumweights = _undiff(weights)
+    cumfreqs = _nearest_int((1 << prec) * (cumweights / cumweights[..., -1:]))
+    def enc_statfun(x):
+        lower = np.take_along_axis(cumfreqs, x[..., None], -1)[..., 0]
+        upper = np.take_along_axis(cumfreqs, x[..., None] + 1, -1)[..., 0]
+        return lower, upper - lower
+    def dec_statfun(cf):
+        # One could speed this up for large alphabets by
+        #   (a) Using vectorized binary search, not available in numpy
+        #   (b) Using the alias method
+        return np.argmin(cumfreqs <= cf[..., None], axis=-1) - 1
+    return NonUniform(enc_statfun, dec_statfun, prec)
